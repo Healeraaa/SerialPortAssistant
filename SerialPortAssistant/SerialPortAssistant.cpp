@@ -1,269 +1,288 @@
 #include "SerialPortAssistant.h"
-#include <algorithm>
 
-
-void SerialPortAssistant::SerialPort_SendAear_Init()
+SerialPortAssistant::SerialPortAssistant(QWidget* parent) : QMainWindow(parent)
 {
-	SerialPort_SendAear = new QPlainTextEdit(this);                              // 创建发送数据的文本框对象
-	SerialPort_SendAear->setFixedSize(800, 100);                                  // 设置文本框固定大小为 800x100 像素
-	SerialPort_SendAear->move(30, 500);                                           // 将文本框移动到窗口坐标 (30, 500) 处
+    this->setWindowTitle(QString::fromLocal8Bit("串口示波器 - 最终全功能版"));
+    this->setMinimumSize(1250, 950);
 
-	SerialPort_Send = new QPushButton(QString::fromLocal8Bit("发送"), this); // 创建“发送数据”按钮，并处理中文编码
-	SerialPort_Send->setFixedSize(150, 50);                                  // 设置文本框固定大小为 800x100 像素
-	SerialPort_Send->move(500, 630);
-	SerialPort_Send->setDisabled(true);                                     // 初始状态下禁用发送按钮，等待串口连接后启用
-
-	connect(SerialPort_Send, &QPushButton::clicked, [&]() {               // 绑定按钮点击信号到 Lambda 表达式
-		// 发送数据的代码
-		QString dataToSend = SerialPort_SendAear->toPlainText(); // 获取发送区的文本内容
-		if (SerialPort_SendMode->currentText() == "HEX")
-		{
-			QByteArray arrayToSend;
-			for (int i = 0; i < dataToSend.size(); ++i)
-			{
-				if (dataToSend[i] == ' ')continue;
-				int num = dataToSend.mid(i, 2).toInt(nullptr, 16);
-				++i;
-				arrayToSend.append(num);
-			}
-			serialPort->write(arrayToSend);
-		}
-		else
-		{
-			serialPort->write(dataToSend.toLocal8Bit().data());
-		}
-		});
-
-	QPushButton* Clear_SendAear = new QPushButton(QString::fromLocal8Bit("清空发送区"), this); // 创建“清空发送区”按钮，并处理中文编码
-	Clear_SendAear->setFixedSize(150, 50);                                       // 设置按钮固定大小
-	Clear_SendAear->move(680, 630);                                              // 设置按钮在界面上的位置 (680, 630)
-	connect(Clear_SendAear, &QPushButton::clicked, [&]() {                       // 绑定按钮点击信号到 Lambda 表达式
-		SerialPort_SendAear->clear();                                            // 调用 clear() 函数清空发送区的文本内容
-		});
+    serialPort = new QSerialPort(this);
+    initUI();
+    setupConnections();
+    this->startTimer(1000); // 串口自动巡检
+    updatePortList();
 }
 
-void SerialPortAssistant::SerialPort_ReceiveAear_Init()
+void SerialPortAssistant::initUI()
 {
-	SerialPort_ReceiveAear = new QPlainTextEdit(this);                              // 创建接收数据的文本框对象
-	SerialPort_ReceiveAear->setFixedSize(800, 400);                                  // 设置文本框固定大小为 800x400 像素
-	SerialPort_ReceiveAear->move(30, 20);                                           // 将文本框移动到窗口坐标 (30, 20) 处
-	SerialPort_ReceiveAear->setReadOnly(true);                                      // 设置为只读模式，防止用户手动修改接收到的通过串口来的数据
+    QWidget* centralWidget = new QWidget(this);
+    this->setCentralWidget(centralWidget);
+    QHBoxLayout* mainLayout = new QHBoxLayout(centralWidget);
 
-	QPushButton* Clear_ReceiveAear = new QPushButton(QString::fromLocal8Bit("清空接收区"), this); // 创建“清空接收区”按钮，并处理中文编码
-	Clear_ReceiveAear->setFixedSize(150, 50);                                       // 设置按钮固定大小
-	Clear_ReceiveAear->move(680, 430);                                              // 设置按钮在界面上的位置
-	connect(Clear_ReceiveAear, &QPushButton::clicked, [&]() {                       // 绑定按钮点击信号到 Lambda 表达式
-		SerialPort_ReceiveAear->clear();                                            // 调用 clear() 函数清空接收区的文本内容
-		});
+    // --- 左侧：数据显示与波形 ---
+    QVBoxLayout* leftLayout = new QVBoxLayout();
+
+    SerialPort_ReceiveAear = new QPlainTextEdit();
+    SerialPort_ReceiveAear->setReadOnly(true);
+    leftLayout->addWidget(new QLabel(QString::fromLocal8Bit("接收日志:")), 0);
+    leftLayout->addWidget(SerialPort_ReceiveAear, 2);
+
+    series = new QLineSeries();
+    QChart* chart = new QChart();
+    chart->addSeries(series);
+    chart->setTitle(QString::fromLocal8Bit("实时波形分析"));
+    chart->legend()->hide();
+
+    axisX = new QValueAxis(); axisX->setRange(0, 100); axisX->setLabelFormat("%d");
+    axisY = new QValueAxis(); axisY->setRange(0, 100);
+    chart->addAxis(axisX, Qt::AlignBottom);
+    chart->addAxis(axisY, Qt::AlignLeft);
+    series->attachAxis(axisX); series->attachAxis(axisY);
+
+    chartView = new QChartView(chart);
+    chartView->setRenderHint(QPainter::Antialiasing);
+    leftLayout->addWidget(chartView, 5);
+
+    ScrollBar_X = new QScrollBar(Qt::Horizontal);
+    ScrollBar_X->setEnabled(false);
+    leftLayout->addWidget(ScrollBar_X);
+
+    SerialPort_SendAear = new QPlainTextEdit();
+    SerialPort_SendAear->setMaximumHeight(80);
+    leftLayout->addWidget(new QLabel(QString::fromLocal8Bit("指令发送:")), 0);
+    leftLayout->addWidget(SerialPort_SendAear, 1);
+
+    // --- 右侧：配置面板 ---
+    QVBoxLayout* rightLayout = new QVBoxLayout();
+    QWidget* configGroup = new QWidget();
+    configGroup->setFixedWidth(300);
+    QGridLayout* grid = new QGridLayout(configGroup);
+
+    SerialPort_Number = new QComboBox();
+    SerialPort_BaudRate = new QComboBox();
+    SerialPort_BaudRate->addItems({ "9600","19200","38400","115200","256000","921600" });
+    SerialPort_BaudRate->setCurrentText("115200");
+    SerialPort_DataBits = new QComboBox(); SerialPort_DataBits->addItems({ "5","6","7","8" }); SerialPort_DataBits->setCurrentText("8");
+    SerialPort_StopBits = new QComboBox(); SerialPort_StopBits->addItems({ "1","1.5","2" });
+    SerialPort_CheckBits = new QComboBox(); SerialPort_CheckBits->addItems({ QString::fromLocal8Bit("无"),QString::fromLocal8Bit("奇"),QString::fromLocal8Bit("偶") });
+
+    SerialPort_ReceiveMode = new QComboBox(); SerialPort_ReceiveMode->addItems({ "TEXT", "HEX" });
+    SerialPort_SendMode = new QComboBox(); SerialPort_SendMode->addItems({ "TEXT", "HEX" });
+
+    Edit_XRange = new QLineEdit("100");
+    Edit_YMax = new QLineEdit("100");
+    Edit_YMin = new QLineEdit("0");
+    CheckBox_AutoScale = new QCheckBox(QString::fromLocal8Bit("Y轴自动量程"));
+    CheckBox_AutoScroll = new QCheckBox(QString::fromLocal8Bit("X轴自动跟随"));
+    CheckBox_AutoScroll->setChecked(true);
+    CheckBox_Timestamp = new QCheckBox(QString::fromLocal8Bit("显示时间戳"));
+    CheckBox_SaveCSV = new QCheckBox(QString::fromLocal8Bit("保存数据到CSV"));
+
+    int r = 0;
+    grid->addWidget(new QLabel(QString::fromLocal8Bit("串口号:")), r, 0); grid->addWidget(SerialPort_Number, r++, 1);
+    grid->addWidget(new QLabel(QString::fromLocal8Bit("波特率:")), r, 0); grid->addWidget(SerialPort_BaudRate, r++, 1);
+    grid->addWidget(new QLabel(QString::fromLocal8Bit("数据位:")), r, 0); grid->addWidget(SerialPort_DataBits, r++, 1);
+    grid->addWidget(new QLabel(QString::fromLocal8Bit("停止位:")), r, 0); grid->addWidget(SerialPort_StopBits, r++, 1);
+    grid->addWidget(new QLabel(QString::fromLocal8Bit("校验位:")), r, 0); grid->addWidget(SerialPort_CheckBits, r++, 1);
+    grid->addWidget(new QLabel(QString::fromLocal8Bit("接收模式:")), r, 0); grid->addWidget(SerialPort_ReceiveMode, r++, 1);
+    grid->addWidget(new QLabel(QString::fromLocal8Bit("发送模式:")), r, 0); grid->addWidget(SerialPort_SendMode, r++, 1);
+    grid->addWidget(new QLabel(QString::fromLocal8Bit("X显示跨度:")), r, 0); grid->addWidget(Edit_XRange, r++, 1);
+    grid->addWidget(new QLabel(QString::fromLocal8Bit("Y上限:")), r, 0); grid->addWidget(Edit_YMax, r++, 1);
+    grid->addWidget(new QLabel(QString::fromLocal8Bit("Y下限:")), r, 0); grid->addWidget(Edit_YMin, r++, 1);
+    grid->addWidget(CheckBox_AutoScale, r++, 1);
+    grid->addWidget(CheckBox_AutoScroll, r++, 1);
+    grid->addWidget(CheckBox_Timestamp, r++, 1);
+    grid->addWidget(CheckBox_SaveCSV, r++, 1);
+
+    rightLayout->addWidget(configGroup);
+    rightLayout->addStretch();
+
+    SerialPort_Connect = new QPushButton(QString::fromLocal8Bit("开启串口"));
+    SerialPort_Disonnect = new QPushButton(QString::fromLocal8Bit("关闭串口"));
+    SerialPort_Disonnect->setEnabled(false);
+    SerialPort_Send = new QPushButton(QString::fromLocal8Bit("发送数据"));
+    SerialPort_Send->setEnabled(false);
+
+    rightLayout->addWidget(SerialPort_Connect);
+    rightLayout->addWidget(SerialPort_Disonnect);
+    rightLayout->addWidget(SerialPort_Send);
+
+    mainLayout->addLayout(leftLayout, 1);
+    mainLayout->addLayout(rightLayout, 0);
 }
 
-void SerialPortAssistant::SerialPort_Control_Init()
+void SerialPortAssistant::setupConnections()
 {
-	this->SerialPort_Number = new QComboBox(this);
-	this->SerialPort_BaudRate = new QComboBox(this);
-	this->SerialPort_DataBits = new QComboBox(this);
-	this->SerialPort_StopBits = new QComboBox(this);
-	this->SerialPort_CheckBits = new QComboBox(this);
-	this->SerialPort_SendMode = new QComboBox(this);
-	this->SerialPort_ReceiveMode = new QComboBox(this);
+    connect(SerialPort_Connect, &QPushButton::clicked, [=]() { togglePort(true); });
+    connect(SerialPort_Disonnect, &QPushButton::clicked, [=]() { togglePort(false); });
 
-	QLabel* Label_SerialPort_Number = new QLabel(QString::fromLocal8Bit("串口号"), this);
+    // --- CSV 动态开启/关闭修复 ---
+    connect(CheckBox_SaveCSV, &QCheckBox::toggled, [=](bool checked) {
+        if (serialPort->isOpen()) {
+            if (checked && !csvFile.isOpen()) {
+                QString fileName = QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss") + ".csv";
+                csvFile.setFileName(fileName);
+                if (csvFile.open(QIODevice::WriteOnly | QIODevice::Text)) {
+                    QTextStream out(&csvFile);
+                    out.setGenerateByteOrderMark(true); // 解决Excel中文乱码
+                    out << "Time,Direction,Data\n";
+                    SerialPort_ReceiveAear->appendPlainText(QString::fromLocal8Bit("--- CSV录制已开启: %1 ---").arg(fileName));
+                }
+            }
+            else if (!checked && csvFile.isOpen()) {
+                csvFile.close();
+                SerialPort_ReceiveAear->appendPlainText(QString::fromLocal8Bit("--- CSV录制已停止并保存 ---"));
+            }
+        }
+        });
 
-	QLabel* Label_SerialPort_BaudRate = new QLabel(QString::fromLocal8Bit("波特率"), this);
-	this->SerialPort_BaudRate->addItem("4800");
-	this->SerialPort_BaudRate->addItem("9600");
-	this->SerialPort_BaudRate->addItem("115200");
+    // --- X轴动态刻度设置 ---
+    connect(Edit_XRange, &QLineEdit::textChanged, [=](const QString& t) {
+        int xRange = t.toInt(); if (xRange < 10) return;
+        if (CheckBox_AutoScroll->isChecked()) {
+            double startX = qMax(0.0, plotCount - xRange);
+            axisX->setRange(startX, startX + xRange);
+        }
+        else {
+            axisX->setMax(axisX->min() + xRange);
+        }
+        });
 
-	QLabel* Label_SerialPort_DataBits = new QLabel(QString::fromLocal8Bit("数据位"), this);
-	this->SerialPort_DataBits->addItem("8");
+    // --- 自动跟随切换 ---
+    connect(CheckBox_AutoScroll, &QCheckBox::toggled, [=](bool checked) {
+        ScrollBar_X->setEnabled(!checked);
+        if (checked) ScrollBar_X->setValue(ScrollBar_X->maximum());
+        });
 
-	QLabel* Label_SerialPort_StopBits = new QLabel(QString::fromLocal8Bit("停止位"), this);
-	this->SerialPort_StopBits->addItem("1");
-	this->SerialPort_StopBits->addItem("1.5");
-	this->SerialPort_StopBits->addItem("2");
+    // --- 滑动条控制历史拖动 ---
+    connect(ScrollBar_X, &QScrollBar::valueChanged, [=](int value) {
+        if (!CheckBox_AutoScroll->isChecked()) {
+            int xRange = Edit_XRange->text().toInt();
+            axisX->setRange(value, value + xRange);
+        }
+        });
 
-	QLabel* Label_SerialPort_CheckBits = new QLabel(QString::fromLocal8Bit("校验位"), this);
-	this->SerialPort_CheckBits->addItem(QString::fromLocal8Bit("无"));
-	this->SerialPort_CheckBits->addItem(QString::fromLocal8Bit("奇校验"));
-	this->SerialPort_CheckBits->addItem(QString::fromLocal8Bit("偶校验"));
+    // --- 核心接收与绘图逻辑 ---
+    connect(serialPort, &QSerialPort::readyRead, [=]() {
+        QByteArray data = serialPort->readAll();
+        if (data.isEmpty()) return;
 
-	QLabel* Label_SerialPort_SendMode = new QLabel(QString::fromLocal8Bit("发送格式"), this);
-	this->SerialPort_SendMode->addItem("HEX");
-	this->SerialPort_SendMode->addItem(QString::fromLocal8Bit("文本"));
+        QString timeStr = QDateTime::currentDateTime().toString("hh:mm:ss.zzz");
+        QString raw = (SerialPort_ReceiveMode->currentText() == "HEX") ?
+            data.toHex(' ').toUpper() : QString::fromLocal8Bit(data).trimmed();
 
-	QLabel* SerialPort_ReceiveMode = new QLabel(QString::fromLocal8Bit("接收格式"), this);
-	this->SerialPort_ReceiveMode->addItem("HEX");
-	this->SerialPort_ReceiveMode->addItem(QString::fromLocal8Bit("文本"));
+        // 文本日志显示
+        SerialPort_ReceiveAear->appendPlainText(CheckBox_Timestamp->isChecked() ? "[" + timeStr + "] " + raw : raw);
+        SerialPort_ReceiveAear->moveCursor(QTextCursor::End);
 
-	QVector<QComboBox*>Control;
-	Control.push_back(this->SerialPort_Number);
-	Control.push_back(this->SerialPort_BaudRate);
-	Control.push_back(this->SerialPort_DataBits);
-	Control.push_back(this->SerialPort_StopBits);
-	Control.push_back(this->SerialPort_CheckBits);
-	Control.push_back(this->SerialPort_SendMode);
-	Control.push_back(this->SerialPort_ReceiveMode);
+        // CSV 写入逻辑
+        if (csvFile.isOpen()) {
+            QTextStream out(&csvFile);
+            out << timeStr << ",RX," << "\"" << raw << "\"\n";
+        }
 
-	QVector<QLabel*>Control_Labels;
-	Control_Labels.push_back(Label_SerialPort_Number);
-	Control_Labels.push_back(Label_SerialPort_BaudRate);
-	Control_Labels.push_back(Label_SerialPort_DataBits);
-	Control_Labels.push_back(Label_SerialPort_StopBits);
-	Control_Labels.push_back(Label_SerialPort_CheckBits);
-	Control_Labels.push_back(Label_SerialPort_SendMode);
-	Control_Labels.push_back(SerialPort_ReceiveMode);
+        // 绘图逻辑
+        bool ok;
+        double val = raw.toDouble(&ok);
+        if (ok) {
+            series->append(plotCount, val);
+            int xRange = Edit_XRange->text().toInt();
 
-	for (int i = 0; i < Control.size(); ++i)
-	{
-		Control[i]->setFixedSize(200, 50);
-		Control[i]->move(850, 20 + i * 80);
-		Control_Labels[i]->move(1080, 25 + i * 80);
-	}
+            if (CheckBox_AutoScroll->isChecked()) {
+                double startX = qMax(0.0, plotCount - xRange);
+                axisX->setRange(startX, startX + xRange);
+                ScrollBar_X->setRange(0, qMax(0, (int)plotCount - xRange));
+                ScrollBar_X->setValue(ScrollBar_X->maximum());
+            }
+            else {
+                ScrollBar_X->setRange(0, qMax(0, (int)plotCount - xRange));
+            }
 
+            // Y轴自动量程（基于当前视窗）
+            if (CheckBox_AutoScale->isChecked()) {
+                auto points = series->pointsVector();
+                int start = qMax(0, (int)points.size() - xRange);
+                double minY = val, maxY = val;
+                for (int i = start; i < points.size(); ++i) {
+                    minY = qMin(minY, points[i].y()); maxY = qMax(maxY, points[i].y());
+                }
+                double padding = (maxY - minY) * 0.15 + 1.0;
+                axisY->setRange(minY - padding, maxY + padding);
+                Edit_YMax->setText(QString::number(maxY + padding, 'f', 2));
+                Edit_YMin->setText(QString::number(minY - padding, 'f', 2));
+            }
+            else {
+                axisY->setRange(Edit_YMin->text().toDouble(), Edit_YMax->text().toDouble());
+            }
+            plotCount++;
+        }
+        });
 
-
-
-
+    // 发送逻辑
+    connect(SerialPort_Send, &QPushButton::clicked, [=]() {
+        if (serialPort->isOpen()) {
+            QString text = SerialPort_SendAear->toPlainText();
+            if (SerialPort_SendMode->currentText() == "HEX")
+                serialPort->write(QByteArray::fromHex(text.toUtf8()));
+            else
+                serialPort->write(text.toLocal8Bit());
+        }
+        });
 }
 
-void SerialPortAssistant::SerialPort_Connection_Init()
+void SerialPortAssistant::togglePort(bool open)
 {
-	SerialPort_Connect = new QPushButton(QString::fromLocal8Bit("连接串口"), this);
-	SerialPort_Disonnect = new QPushButton(QString::fromLocal8Bit("断开串口"), this);
-	SerialPort_Connect->setFixedSize(150,50);
-	SerialPort_Disonnect->setFixedSize(150, 50);
-	SerialPort_Connect->move(850, 600);
-	SerialPort_Disonnect->move(1000, 600);
+    if (open) {
+        if (SerialPort_Number->currentText().isEmpty()) return;
+        serialPort->setPortName(SerialPort_Number->currentText());
+        serialPort->setBaudRate(SerialPort_BaudRate->currentText().toInt());
+        serialPort->setDataBits((QSerialPort::DataBits)SerialPort_DataBits->currentText().toInt());
 
-	SerialPort_Disonnect->setDisabled(true);
+        QString s = SerialPort_StopBits->currentText();
+        serialPort->setStopBits(s == "1" ? QSerialPort::OneStop : (s == "1.5" ? QSerialPort::OneAndHalfStop : QSerialPort::TwoStop));
 
-	connect(SerialPort_Connect, &QPushButton::clicked, [&]() {
-		// 连接串口的代码
-		if (SerialPort_Number->currentText() != "")
-		{
-			SerialPort_Send->setDisabled(false);
-			SerialPort_Connect->setDisabled(true);
-			SerialPort_Disonnect->setDisabled(false);
-			SerialPort_Connection();
-		}
-		else
-		{
-			QMessageBox::critical(this, QString::fromLocal8Bit("串口打开失败"), QString::fromLocal8Bit("请确认串口是否连接正确"));
-		}
-		
-		
-		});
-	connect(SerialPort_Disonnect, &QPushButton::clicked, [&](){
-		// 断开串口的代码
-		SerialPort_Send->setDisabled(true);
-		SerialPort_Connect->setDisabled(false);
-		SerialPort_Disonnect->setDisabled(true);
-		serialPort->close();
-		});
+        QString c = SerialPort_CheckBits->currentText();
+        serialPort->setParity(c.contains(QString::fromLocal8Bit("奇")) ? QSerialPort::OddParity : (c.contains(QString::fromLocal8Bit("偶")) ? QSerialPort::EvenParity : QSerialPort::NoParity));
 
+        if (serialPort->open(QSerialPort::ReadWrite)) {
+            // 如果连接瞬间勾选了CSV，开启文件
+            if (CheckBox_SaveCSV->isChecked()) {
+                csvFile.setFileName(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss") + ".csv");
+                if (csvFile.open(QIODevice::WriteOnly | QIODevice::Text)) {
+                    QTextStream out(&csvFile); out.setGenerateByteOrderMark(true);
+                    out << "Time,Direction,Data\n";
+                }
+            }
+            SerialPort_Connect->setEnabled(false);
+            SerialPort_Disonnect->setEnabled(true);
+            SerialPort_Send->setEnabled(true);
+            SerialPort_Number->setEnabled(false);
+        }
+        else {
+            QMessageBox::critical(this, "Error", serialPort->errorString());
+        }
+    }
+    else {
+        if (csvFile.isOpen()) csvFile.close();
+        serialPort->close();
+        SerialPort_Connect->setEnabled(true);
+        SerialPort_Disonnect->setEnabled(false);
+        SerialPort_Send->setEnabled(false);
+        SerialPort_Number->setEnabled(true);
+    }
 }
 
-void SerialPortAssistant::SerialPort_Connection()
+void SerialPortAssistant::updatePortList()
 {
-	QSerialPort::BaudRate Baud;
-	QSerialPort::DataBits Data;
-	QSerialPort::StopBits Stop;
-	QSerialPort::Parity Check;
-	 
-	QString port = SerialPort_Number->currentText();
-	QString baud = SerialPort_BaudRate->currentText();
-	QString data = SerialPort_DataBits->currentText();
-	QString stop = SerialPort_StopBits->currentText();
-	QString check = SerialPort_CheckBits->currentText();
-
-	if (baud == "4800") Baud = QSerialPort::Baud4800;
-	else if (baud == "9600") Baud = QSerialPort::Baud9600;
-	else if (baud == "115200") Baud = QSerialPort::Baud115200;
-
-	if (data == "8") Data = QSerialPort::Data8;
-
-	if (stop == "1") Stop = QSerialPort::OneStop;
-	else if (stop == "1.5") Stop = QSerialPort::OneAndHalfStop;
-	else if (stop == "2") Stop = QSerialPort::TwoStop;
-
-	if (check == QString::fromLocal8Bit("无")) Check = QSerialPort::NoParity;
-	else if (check == QString::fromLocal8Bit("奇校验")) Check = QSerialPort::OddParity;
-	else if (check == QString::fromLocal8Bit("偶校验")) Check = QSerialPort::EvenParity;
-
-	serialPort = new QSerialPort(this);
-	serialPort->setBaudRate(Baud);
-	serialPort->setDataBits(Data);
-	serialPort->setStopBits(Stop);
-	serialPort->setParity(Check);
-	serialPort->setPortName(port); 
-	 
-	if (serialPort->open(QSerialPort::ReadWrite))
-	{
-		connect(serialPort, &QSerialPort::readyRead, [&]() {
-			auto data = serialPort->readAll();
-			if (SerialPort_ReceiveMode->currentText() == "HEX")
-			{
-				QString hex = data.toHex(' ');
-				SerialPort_ReceiveAear->appendPlainText(hex);
-			}
-			else
-			{
-				QString str = QString(data);
-				SerialPort_ReceiveAear->appendPlainText(data);
-			}
-			});
-	}
-	else
-	{
-		QMessageBox::critical(this, QString::fromLocal8Bit("串口打开失败"), QString::fromLocal8Bit("请确认串口是否连接正确"));
-	}
-
+    QVector<QString> current;
+    for (const QSerialPortInfo& i : QSerialPortInfo::availablePorts()) current << i.portName();
+    if (current != lastPortList) {
+        QString old = SerialPort_Number->currentText();
+        SerialPort_Number->clear();
+        for (const QString& s : current) SerialPort_Number->addItem(s);
+        SerialPort_Number->setCurrentText(old);
+        lastPortList = current;
+    }
 }
 
-
-void SerialPortAssistant::timerEvent(QTimerEvent* event)
-{
-	QVector<QString> currentPorts;
-	for (const QSerialPortInfo& info : QSerialPortInfo::availablePorts())
-	{
-		currentPorts.push_back(info.portName());
-	}
-
-	// 使用自定义 Lambda 表达式进行排序
-	std::sort(currentPorts.begin(), currentPorts.end(), [](const QString& s1, const QString& s2) {
-		// 提取 "COM" 后面的数字部分
-		// mid(3) 假设名字都是 "COM" 开头。如果可能是其它名字，需要更严谨的处理。
-		int n1 = s1.mid(3).toInt();
-		int n2 = s2.mid(3).toInt();
-
-		// 如果名字不是以 COM 开头或者转换失败，退回到默认字符串比较
-		if (s1.startsWith("COM") && s2.startsWith("COM") && n1 > 0 && n2 > 0) {
-			return n1 < n2;
-		}
-		return s1 < s2;
-		});
-
-	// ... (后续更新 UI 的逻辑)
-	if (currentPorts != portList)
-	{
-		this->SerialPort_Number->clear();
-		this->portList = currentPorts;
-		for (auto& a : portList) this->SerialPort_Number->addItem(a);
-	}
-}
-
-SerialPortAssistant::SerialPortAssistant(QWidget *parent): QMainWindow(parent)
-{
-	this->setWindowTitle(QString::fromLocal8Bit("陈娇的串口助手"));
-	this->setFixedSize(1200,750);
-
-	SerialPort_ReceiveAear_Init();
-	SerialPort_SendAear_Init();
-	SerialPort_Control_Init();
-	SerialPort_Connection_Init();
-	this->startTimer(1000);
-}
-
-SerialPortAssistant::~SerialPortAssistant()
-{}
-
+void SerialPortAssistant::timerEvent(QTimerEvent*) { updatePortList(); }
+SerialPortAssistant::~SerialPortAssistant() { if (csvFile.isOpen()) csvFile.close(); }
