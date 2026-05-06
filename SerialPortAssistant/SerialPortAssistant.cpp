@@ -1,7 +1,7 @@
 #include "SerialPortAssistant.h"
 
 SerialPortAssistant::SerialPortAssistant(QWidget* parent) : QMainWindow(parent) {
-    this->setWindowTitle(QString::fromLocal8Bit("全能串口示波器 - 稳定版"));
+    this->setWindowTitle(QString::fromLocal8Bit("ceio通信助手"));
     this->setMinimumSize(1280, 900);
     serialPort = new QSerialPort(this);
     initUI();
@@ -74,7 +74,7 @@ void SerialPortAssistant::initUI() {
     CheckBox_SaveCSV = new QCheckBox(QString::fromLocal8Bit("实时保存数据到CSV"));
 
     int r = 0;
-    grid->addWidget(new QLabel(QString::fromLocal8Bit("串口:")), r, 0); grid->addWidget(SerialPort_Number, r++, 1);
+    grid->addWidget(new QLabel(QString::fromLocal8Bit("端口:")), r, 0); grid->addWidget(SerialPort_Number, r++, 1);
     grid->addWidget(new QLabel(QString::fromLocal8Bit("波特率:")), r, 0); grid->addWidget(SerialPort_BaudRate, r++, 1);
     grid->addWidget(new QLabel(QString::fromLocal8Bit("数据位:")), r, 0); grid->addWidget(SerialPort_DataBits, r++, 1);
     grid->addWidget(new QLabel(QString::fromLocal8Bit("停止位:")), r, 0); grid->addWidget(SerialPort_StopBits, r++, 1);
